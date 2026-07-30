@@ -120,26 +120,60 @@ public final class VirtualHiDPI {
         // Give WindowServer a beat to register the new display before the
         // mirror transaction references it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-            switch Self.mirror(physical: physical.id, onto: virtualID,
-                               virtualOrigin: arrangementOrigin,
-                               physicalNativeMode: nativeRef)
-            {
-            case .success:
-                sessions[physical.id] = Session(physical: physical, virtualID: virtualID,
-                                                ladder: ladder, currentRung: target,
-                                                display: display)
-                // A freshly created virtual display may briefly report an
-                // empty mode list; retry once after it settles.
-                if !setRung(target, physicalID: physical.id) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                        _ = self?.setRung(target, physicalID: physical.id)
+            // Own transaction first: combining a mode change with mirroring
+            // in one transaction is rejected as kCGErrorInvalidOperation.
+            if let nativeRef {
+                Self.setPanelMode(nativeRef, on: physical.id,
+                                  panelWidth: physical.pixelWidth,
+                                  panelHeight: physical.pixelHeight)
+            }
+
+            func mirrorAndFinish(attemptsLeft: Int) {
+                switch Self.mirror(physical: physical.id, onto: virtualID,
+                                   virtualOrigin: arrangementOrigin)
+                {
+                case .success:
+                    sessions[physical.id] = Session(physical: physical, virtualID: virtualID,
+                                                    ladder: ladder, currentRung: target,
+                                                    display: display)
+                    // A freshly created virtual display may briefly report an
+                    // empty mode list; retry once after it settles.
+                    if !setRung(target, physicalID: physical.id) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                            _ = self?.setRung(target, physicalID: physical.id)
+                        }
+                    }
+                    finish(.success(()))
+                case .failure(let error):
+                    guard attemptsLeft > 0 else {
+                        finish(.failure(error))  // `display` released → removed
+                        return
+                    }
+                    // WindowServer can transiently reject the transaction
+                    // right after a mode switch; retry after it settles.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        mirrorAndFinish(attemptsLeft: attemptsLeft - 1)
                     }
                 }
-                finish(.success(()))
-            case .failure(let error):
-                finish(.failure(error))  // `display` goes out of scope → removed
             }
+            mirrorAndFinish(attemptsLeft: 2)
         }
+    }
+
+    /// Drive the panel at its native pixel grid so the mirror scaler outputs
+    /// 1:1 pixels. Best-effort, in its own transaction.
+    private static func setPanelMode(_ mode: CGDisplayMode, on display: CGDirectDisplayID,
+                                     panelWidth: Int, panelHeight: Int)
+    {
+        if let current = CGDisplayCopyDisplayMode(display),
+           current.pixelWidth == panelWidth, current.pixelHeight == panelHeight
+        {
+            return  // already scanning out native pixels
+        }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
+        _ = CGCompleteDisplayConfiguration(config, .forSession)
     }
 
     /// Un-mirror first; drop the CGVirtualDisplay reference last so the
@@ -175,15 +209,11 @@ public final class VirtualHiDPI {
 
     private static func mirror(physical: CGDirectDisplayID,
                                onto virtualID: CGDirectDisplayID,
-                               virtualOrigin: CGPoint,
-                               physicalNativeMode: CGDisplayMode?) -> Result<Void, Error>
+                               virtualOrigin: CGPoint) -> Result<Void, Error>
     {
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else {
             return .failure(.mirrorFailed(.failure))
-        }
-        if let mode = physicalNativeMode {
-            CGConfigureDisplayWithDisplayMode(config, physical, mode, nil)
         }
         CGConfigureDisplayMirrorOfDisplay(config, physical, virtualID)
         CGConfigureDisplayOrigin(config, virtualID,
