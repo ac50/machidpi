@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Make reality match preferences: tear down sessions whose physical
     /// display vanished; enable remembered displays that (re)appeared.
     private func reconcile() {
+        persistOrigins()
         let externals = Displays.external(excluding: hidpi.virtualIDs)
         let presentIDs = Set(externals.map(\.id))
 
@@ -56,14 +57,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    /// Remember where the user placed each virtual display (arrangement
+    /// changes arrive as reconfiguration events) so enable can restore it.
+    private func persistOrigins() {
+        for session in hidpi.sessions.values {
+            let origin = CGDisplayBounds(session.virtualID).origin
+            var prefs = store.prefs(for: session.physical.uuid)
+                ?? DisplayPrefs(enabled: true, rung: session.currentRung)
+            if prefs.originX != Int(origin.x) || prefs.originY != Int(origin.y) {
+                prefs.originX = Int(origin.x)
+                prefs.originY = Int(origin.y)
+                store.set(prefs, for: session.physical.uuid)
+            }
+        }
+    }
+
     private func enableDisplay(_ display: PhysicalDisplay, rung: Rung?) {
         lastErrors[display.uuid] = nil
-        hidpi.enable(display, rung: rung) { [weak self] result in
+        let saved = store.prefs(for: display.uuid)
+        let origin = saved.flatMap { prefs in
+            prefs.originX.flatMap { x in prefs.originY.map { y in
+                CGPoint(x: Double(x), y: Double(y))
+            } }
+        }
+        hidpi.enable(display, rung: rung, origin: origin) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success:
-                let current = self.hidpi.sessions[display.id]?.currentRung
-                self.store.set(DisplayPrefs(enabled: true, rung: current), for: display.uuid)
+                var prefs = self.store.prefs(for: display.uuid)
+                    ?? DisplayPrefs(enabled: true, rung: nil)
+                prefs.enabled = true
+                prefs.rung = self.hidpi.sessions[display.id]?.currentRung
+                self.store.set(prefs, for: display.uuid)
+                self.persistOrigins()
             case .failure(let error):
                 self.lastErrors[display.uuid] = error.localizedDescription
             }
@@ -98,7 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if let session {
                 for rung in session.ladder {
-                    let item = NSMenuItem(title: rung.label,
+                    let exact = Scaling.isPixelExact(rung,
+                                                     panelWidth: display.pixelWidth,
+                                                     panelHeight: display.pixelHeight)
+                    let item = NSMenuItem(title: exact ? "\(rung.label)  ✦" : rung.label,
                                           action: #selector(selectRung(_:)), keyEquivalent: "")
                     item.target = self
                     item.state = rung == session.currentRung ? .on : .off
@@ -145,7 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectRung(_ sender: NSMenuItem) {
         guard let ref = sender.representedObject as? DisplayRef, let rung = ref.rung else { return }
         if hidpi.setRung(rung, physicalID: ref.display.id) {
-            store.set(DisplayPrefs(enabled: true, rung: rung), for: ref.display.uuid)
+            var prefs = store.prefs(for: ref.display.uuid) ?? DisplayPrefs(enabled: true, rung: nil)
+            prefs.enabled = true
+            prefs.rung = rung
+            store.set(prefs, for: ref.display.uuid)
         } else {
             lastErrors[ref.display.uuid] = "could not switch to \(rung.label)"
         }

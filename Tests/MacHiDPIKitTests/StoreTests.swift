@@ -32,6 +32,23 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(Store(defaults: defaults).prefs(for: "uuid-a"), prefs)
     }
 
+    func testOriginRoundTrip() {
+        let prefs = DisplayPrefs(enabled: true, rung: Rung(width: 1920, height: 1080),
+                                 originX: -2560, originY: 180)
+        store.set(prefs, for: "uuid-a")
+        XCTAssertEqual(store.prefs(for: "uuid-a"), prefs)
+    }
+
+    func testDecodesLegacyPayloadWithoutOrigin() {
+        // Payload written by v0.1 builds, before origin fields existed.
+        let legacy = #"{"uuid-a":{"enabled":true,"rung":{"width":1920,"height":1080}}}"#
+        defaults.set(Data(legacy.utf8), forKey: "displays")
+        let prefs = store.prefs(for: "uuid-a")
+        XCTAssertEqual(prefs?.enabled, true)
+        XCTAssertEqual(prefs?.rung, Rung(width: 1920, height: 1080))
+        XCTAssertNil(prefs?.originX)
+    }
+
     func testUpdateOverwritesAndKeepsOthers() {
         store.set(DisplayPrefs(enabled: true, rung: nil), for: "uuid-a")
         store.set(DisplayPrefs(enabled: false, rung: nil), for: "uuid-b")

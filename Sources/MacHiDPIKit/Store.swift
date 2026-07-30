@@ -4,9 +4,17 @@ import Foundation
 public struct DisplayPrefs: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var rung: Rung?
-    public init(enabled: Bool, rung: Rung?) {
+    /// Last known arrangement origin of the (virtual) display. Restored on
+    /// enable: macOS only remembers the physical display's stale position,
+    /// so relying on it resets the user's arrangement every login.
+    public var originX: Int?
+    public var originY: Int?
+
+    public init(enabled: Bool, rung: Rung?, originX: Int? = nil, originY: Int? = nil) {
         self.enabled = enabled
         self.rung = rung
+        self.originX = originX
+        self.originY = originY
     }
 }
 

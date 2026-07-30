@@ -45,8 +45,10 @@ public final class VirtualHiDPI {
 
     /// Create the virtual display, wait for WindowServer to register it,
     /// mirror the physical display onto it, then select the wanted rung.
+    /// `origin` restores the user's saved arrangement position; when nil the
+    /// virtual display takes the physical display's current place.
     /// No-op while a session exists or an enable is already in flight.
-    public func enable(_ physical: PhysicalDisplay, rung: Rung?,
+    public func enable(_ physical: PhysicalDisplay, rung: Rung?, origin: CGPoint? = nil,
                        completion: @escaping (Result<Void, Error>) -> Void)
     {
         guard sessions[physical.id] == nil, !pending.contains(physical.id) else { return }
@@ -67,10 +69,10 @@ public final class VirtualHiDPI {
             completion(result)
         }
 
-        // Captured before mirroring: the virtual display takes the physical
-        // display's place in the arrangement, and the panel must run its
-        // native mode so the mirror scaler outputs 1:1 pixels.
-        let arrangementOrigin = CGDisplayBounds(physical.id).origin
+        // Captured before mirroring: the virtual display takes the saved
+        // position (or the physical display's place), and the panel must run
+        // its native mode so the mirror scaler outputs 1:1 pixels.
+        let arrangementOrigin = origin ?? CGDisplayBounds(physical.id).origin
         let (physInfos, physRefs) = Displays.modeInfosWithRefs(for: physical.id)
         let nativeRef = ModeSelection.nativeMode(panelWidth: physical.pixelWidth,
                                                  panelHeight: physical.pixelHeight,

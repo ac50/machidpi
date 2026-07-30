@@ -39,6 +39,22 @@ final class ScalingTests: XCTestCase {
         XCTAssertTrue(Scaling.ladder(panelWidth: 640, panelHeight: 480).isEmpty)
     }
 
+    func testIsPixelExact() {
+        // 2K panel: 1280×720 (backing = panel, 1:1) and 2560×1440
+        // (backing = 2× panel) are exact; 1920×1080 is 1.5:1 fractional.
+        XCTAssertTrue(Scaling.isPixelExact(Rung(width: 1280, height: 720),
+                                           panelWidth: 2560, panelHeight: 1440))
+        XCTAssertTrue(Scaling.isPixelExact(Rung(width: 2560, height: 1440),
+                                           panelWidth: 2560, panelHeight: 1440))
+        XCTAssertFalse(Scaling.isPixelExact(Rung(width: 1920, height: 1080),
+                                            panelWidth: 2560, panelHeight: 1440))
+        // 4K panel: looks-like 1920×1080 backs 3840×2160 = exactly the panel.
+        XCTAssertTrue(Scaling.isPixelExact(Rung(width: 1920, height: 1080),
+                                           panelWidth: 3840, panelHeight: 2160))
+        XCTAssertFalse(Scaling.isPixelExact(Rung(width: 2560, height: 1440),
+                                            panelWidth: 3840, panelHeight: 2160))
+    }
+
     func testDefaultRungPrefersTwoThirds() {
         let ladder = Scaling.ladder(panelWidth: 2560, panelHeight: 1440)
         XCTAssertEqual(Scaling.defaultRung(for: ladder, panelWidth: 2560),

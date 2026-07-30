@@ -53,9 +53,22 @@ swift build -c release --arch arm64
 ## Usage
 
 Click the menu bar icon → check **Enable HiDPI** under your display → pick a
-"looks like" resolution. Preferences persist per display (by display UUID)
-and re-apply automatically when the display is replugged. Enable **Launch at
-Login** to make it permanent.
+"looks like" resolution. Preferences — including the display's position in
+your arrangement — persist per display (by display UUID) and re-apply
+automatically when the display is replugged or at next login. Enable
+**Launch at Login** to make it permanent.
+
+### Sharpness (the ✦ marker)
+
+Rungs marked **✦** are pixel-exact: their 2× backing store maps onto the
+panel at an integer ratio, so nothing is resampled. On a 2560×1440 panel
+that's *looks like 2560×1440* (renders 5120×2880, exact 2:1 — same UI size
+as native, much sharper text) and *looks like 1280×720* (exact 1:1).
+Fractional rungs like *looks like 1920×1080* on a 1440p panel (1.5:1) are
+inherently a little softer — that is a property of macOS's scaler shared by
+every tool of this kind, not something machidpi can remove. Windows stays
+sharper at "1080p-sized UI on 2K" because it scales vector UI at native
+resolution instead of downsampling a rendered bitmap.
 
 Diagnostics for bug reports:
 

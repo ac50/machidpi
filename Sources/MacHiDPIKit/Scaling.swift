@@ -39,4 +39,18 @@ public enum Scaling {
         let target = Double(panelWidth) * 2.0 / 3.0
         return ladder.min { abs(Double($0.width) - target) < abs(Double($1.width) - target) }
     }
+
+    /// A rung is pixel-exact when its 2x backing store maps onto the panel at
+    /// an integer ratio (1:1 or 2:1). Fractional ratios (e.g. looks-like
+    /// 1920×1080 on a 2560×1440 panel = 1.5:1) resample every pixel and are
+    /// inherently softer — that softness is a macOS scaler property no tool
+    /// can remove.
+    public static func isPixelExact(_ rung: Rung, panelWidth: Int, panelHeight: Int) -> Bool {
+        guard panelWidth > 0, panelHeight > 0 else { return false }
+        let backingWidth = 2 * rung.width
+        let backingHeight = 2 * rung.height
+        return backingWidth % panelWidth == 0
+            && backingHeight % panelHeight == 0
+            && backingWidth / panelWidth == backingHeight / panelHeight
+    }
 }
