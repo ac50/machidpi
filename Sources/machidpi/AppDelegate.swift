@@ -37,10 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
+    /// UUIDs of displays that currently occupy a place in the arrangement.
+    private var lastArrangedSet: Set<String> = []
+
     /// Make reality match preferences: tear down sessions whose physical
     /// display vanished; enable remembered displays that (re)appeared.
     private func reconcile() {
-        persistOrigins()
         let externals = Displays.external(excluding: hidpi.virtualIDs)
         let presentIDs = Set(externals.map(\.id))
 
@@ -54,6 +56,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         {
             enableDisplay(display, rung: store.prefs(for: display.uuid)?.rung)
         }
+
+        // Topology change (lid open/close, plug/unplug): macOS repositions
+        // displays on such transitions, so re-apply the saved layout. On a
+        // stable topology the event was the user dragging — record it.
+        let arrangedSet = Set(Displays.onlineIDs()
+            .filter { !Displays.isMirrorSlave($0) }
+            .compactMap(Displays.uuidString(for:)))
+        if arrangedSet != lastArrangedSet {
+            lastArrangedSet = arrangedSet
+            if !hidpi.sessions.isEmpty {
+                restoreArrangement(store.arrangement())
+            }
+        } else {
+            persistOrigins()
+        }
         rebuildMenu()
     }
 
@@ -62,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// an enable is in flight so transient layouts are never recorded.
     private func persistOrigins() {
         guard hidpi.pending.isEmpty, !hidpi.sessions.isEmpty else { return }
+        let arranged = Displays.onlineIDs().filter { !Displays.isMirrorSlave($0) }
+        // A lone display always sits at (0,0); recording that transient
+        // state (clamshell) would corrupt the remembered multi-display
+        // layout, so only snapshot real arrangements.
+        guard arranged.count >= 2 else { return }
 
         for session in hidpi.sessions.values {
             let origin = CGDisplayBounds(session.virtualID).origin
@@ -74,13 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        var map: [String: DisplayOrigin] = [:]
-        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
+        // Merge so displays that are temporarily offline keep their entries.
+        let existing = store.arrangement()
+        var map = existing
+        for id in arranged {
             guard let uuid = Displays.uuidString(for: id) else { continue }
             let origin = CGDisplayBounds(id).origin
             map[uuid] = DisplayOrigin(x: Int(origin.x), y: Int(origin.y))
         }
-        if !map.isEmpty, map != store.arrangement() {
+        if map != existing {
             store.setArrangement(map)
         }
     }
