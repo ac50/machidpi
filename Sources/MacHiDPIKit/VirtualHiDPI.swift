@@ -97,7 +97,13 @@ public final class VirtualHiDPI {
                 sessions[physical.id] = Session(physical: physical, virtualID: virtualID,
                                                 ladder: ladder, currentRung: target,
                                                 display: display)
-                _ = setRung(target, physicalID: physical.id)  // best effort
+                // A freshly created virtual display may briefly report an
+                // empty mode list; retry once after it settles.
+                if !setRung(target, physicalID: physical.id) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        _ = self?.setRung(target, physicalID: physical.id)
+                    }
+                }
                 completion(.success(()))
             case .failure(let error):
                 completion(.failure(error))  // `display` goes out of scope → removed
