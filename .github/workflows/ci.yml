@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Unit tests
+        run: swift test --parallel
+
+      - name: Build release (arm64)
+        run: swift build -c release --arch arm64
+
+      - name: Probe smoke test (real CGVirtualDisplay on the runner)
+        continue-on-error: true
+        run: |
+          BIN=$(swift build -c release --arch arm64 --show-bin-path)/machidpi
+          "$BIN" probe
+
+      - name: Assemble app bundle
+        run: |
+          BIN=$(swift build -c release --arch arm64 --show-bin-path)/machidpi
+          APP=build/machidpi.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp "$BIN" "$APP/Contents/MacOS/machidpi"
+          VERSION="0.0.0-dev"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] && VERSION="${GITHUB_REF_NAME#v}"
+          sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --sign - "$APP"
+          ditto -c -k --keepParent "$APP" build/machidpi.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: machidpi
+          path: build/machidpi.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" build/machidpi.zip \
+            --title "machidpi $GITHUB_REF_NAME" --generate-notes
