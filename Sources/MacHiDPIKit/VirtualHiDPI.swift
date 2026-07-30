@@ -7,12 +7,14 @@ import Foundation
 public final class VirtualHiDPI {
     public enum Error: Swift.Error, LocalizedError {
         case creationFailed
+        case applySettingsFailed
         case mirrorFailed(CGError)
         case modeNotFound
 
         public var errorDescription: String? {
             switch self {
             case .creationFailed: return "virtual display creation failed"
+            case .applySettingsFailed: return "virtual display rejected mode settings"
             case .mirrorFailed(let e): return "mirror configuration failed (CGError \(e.rawValue))"
             case .modeNotFound: return "no matching HiDPI mode on virtual display"
             }
@@ -29,6 +31,12 @@ public final class VirtualHiDPI {
 
     public private(set) var sessions: [CGDirectDisplayID: Session] = [:]
 
+    /// Physical displays with an enable in flight. Guards against the
+    /// startup race where our own mirror transaction fires a display-
+    /// reconfiguration event that triggers a second enable — creating a
+    /// duplicate virtual display with the same identity, which fails.
+    public private(set) var pending: Set<CGDirectDisplayID> = []
+
     public var virtualIDs: Set<CGDirectDisplayID> {
         Set(sessions.values.map(\.virtualID))
     }
@@ -37,9 +45,12 @@ public final class VirtualHiDPI {
 
     /// Create the virtual display, wait for WindowServer to register it,
     /// mirror the physical display onto it, then select the wanted rung.
+    /// No-op while a session exists or an enable is already in flight.
     public func enable(_ physical: PhysicalDisplay, rung: Rung?,
                        completion: @escaping (Result<Void, Error>) -> Void)
     {
+        guard sessions[physical.id] == nil, !pending.contains(physical.id) else { return }
+
         let ladder = Scaling.ladder(panelWidth: physical.pixelWidth,
                                     panelHeight: physical.pixelHeight)
         guard let target = rung.flatMap({ ladder.contains($0) ? $0 : nil })
@@ -49,6 +60,21 @@ public final class VirtualHiDPI {
             completion(.failure(.modeNotFound))
             return
         }
+
+        pending.insert(physical.id)
+        let finish: (Result<Void, Error>) -> Void = { [self] result in
+            pending.remove(physical.id)
+            completion(result)
+        }
+
+        // Captured before mirroring: the virtual display takes the physical
+        // display's place in the arrangement, and the panel must run its
+        // native mode so the mirror scaler outputs 1:1 pixels.
+        let arrangementOrigin = CGDisplayBounds(physical.id).origin
+        let (physInfos, physRefs) = Displays.modeInfosWithRefs(for: physical.id)
+        let nativeRef = ModeSelection.nativeMode(panelWidth: physical.pixelWidth,
+                                                 panelHeight: physical.pixelHeight,
+                                                 in: physInfos).map { physRefs[$0.index] }
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.name = "\(physical.name) (HiDPI)"
@@ -81,10 +107,12 @@ public final class VirtualHiDPI {
                                  refreshRate: physical.refreshRate)
         }
 
-        guard let display = CGVirtualDisplay(descriptor: descriptor),
-              display.apply(settings)
-        else {
-            completion(.failure(.creationFailed))
+        guard let display = CGVirtualDisplay(descriptor: descriptor) else {
+            finish(.failure(.creationFailed))
+            return
+        }
+        guard display.apply(settings) else {
+            finish(.failure(.applySettingsFailed))
             return
         }
         let virtualID = CGDirectDisplayID(display.displayID)
@@ -92,7 +120,10 @@ public final class VirtualHiDPI {
         // Give WindowServer a beat to register the new display before the
         // mirror transaction references it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-            switch Self.mirror(physical: physical.id, onto: virtualID) {
+            switch Self.mirror(physical: physical.id, onto: virtualID,
+                               virtualOrigin: arrangementOrigin,
+                               physicalNativeMode: nativeRef)
+            {
             case .success:
                 sessions[physical.id] = Session(physical: physical, virtualID: virtualID,
                                                 ladder: ladder, currentRung: target,
@@ -104,9 +135,9 @@ public final class VirtualHiDPI {
                         _ = self?.setRung(target, physicalID: physical.id)
                     }
                 }
-                completion(.success(()))
+                finish(.success(()))
             case .failure(let error):
-                completion(.failure(error))  // `display` goes out of scope → removed
+                finish(.failure(error))  // `display` goes out of scope → removed
             }
         }
     }
@@ -143,14 +174,20 @@ public final class VirtualHiDPI {
     }
 
     private static func mirror(physical: CGDirectDisplayID,
-                               onto virtualID: CGDirectDisplayID) -> Result<Void, Error>
+                               onto virtualID: CGDirectDisplayID,
+                               virtualOrigin: CGPoint,
+                               physicalNativeMode: CGDisplayMode?) -> Result<Void, Error>
     {
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else {
             return .failure(.mirrorFailed(.failure))
         }
+        if let mode = physicalNativeMode {
+            CGConfigureDisplayWithDisplayMode(config, physical, mode, nil)
+        }
         CGConfigureDisplayMirrorOfDisplay(config, physical, virtualID)
-        CGConfigureDisplayOrigin(config, virtualID, 0, 0)
+        CGConfigureDisplayOrigin(config, virtualID,
+                                 Int32(virtualOrigin.x), Int32(virtualOrigin.y))
         let error = CGCompleteDisplayConfiguration(config, .forSession)
         return error == .success ? .success(()) : .failure(.mirrorFailed(error))
     }

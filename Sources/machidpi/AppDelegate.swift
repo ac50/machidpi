@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         for display in externals
         where hidpi.sessions[display.id] == nil
+            && !hidpi.pending.contains(display.id)
             && store.prefs(for: display.uuid)?.enabled == true
         {
             enableDisplay(display, rung: store.prefs(for: display.uuid)?.rung)
@@ -129,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleDisplay(_ sender: NSMenuItem) {
         guard let ref = sender.representedObject as? DisplayRef else { return }
+        guard !hidpi.pending.contains(ref.display.id) else { return }
         if hidpi.sessions[ref.display.id] != nil {
             hidpi.disable(physicalID: ref.display.id)
             var prefs = store.prefs(for: ref.display.uuid) ?? DisplayPrefs(enabled: false, rung: nil)

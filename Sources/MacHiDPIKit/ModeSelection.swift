@@ -33,4 +33,15 @@ public enum ModeSelection {
             .filter { $0.isHiDPI && $0.width == rung.width && $0.height == rung.height }
             .max { $0.refreshRate < $1.refreshRate }
     }
+
+    /// The 1x mode that drives the panel at its native pixel grid, preferring
+    /// the highest refresh rate. The mirror scaler must output native pixels;
+    /// any other panel mode adds a second, blurry scaling pass in the monitor.
+    public static func nativeMode(panelWidth: Int, panelHeight: Int,
+                                  in modes: [ModeInfo]) -> ModeInfo?
+    {
+        modes
+            .filter { !$0.isHiDPI && $0.pixelWidth == panelWidth && $0.pixelHeight == panelHeight }
+            .max { $0.refreshRate < $1.refreshRate }
+    }
 }
