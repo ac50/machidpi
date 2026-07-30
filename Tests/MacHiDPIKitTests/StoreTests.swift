@@ -2,18 +2,21 @@ import XCTest
 @testable import MacHiDPIKit
 
 final class StoreTests: XCTestCase {
+    // Unique suite per test: `swift test --parallel` spreads methods across
+    // processes, and a shared on-disk defaults domain would race.
+    private var suiteName: String!
     private var defaults: UserDefaults!
     private var store: Store!
 
     override func setUp() {
         super.setUp()
-        defaults = UserDefaults(suiteName: "machidpi.tests")!
-        defaults.removePersistentDomain(forName: "machidpi.tests")
+        suiteName = "machidpi.tests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)!
         store = Store(defaults: defaults)
     }
 
     override func tearDown() {
-        defaults.removePersistentDomain(forName: "machidpi.tests")
+        defaults.removePersistentDomain(forName: suiteName)
         super.tearDown()
     }
 

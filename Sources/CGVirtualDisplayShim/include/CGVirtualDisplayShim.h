@@ -4,6 +4,8 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 @interface CGVirtualDisplayMode : NSObject
 - (instancetype)initWithWidth:(unsigned int)width
                        height:(unsigned int)height
@@ -32,6 +34,8 @@
 
 @interface CGVirtualDisplay : NSObject
 @property (readonly, nonatomic) unsigned int displayID;
-- (instancetype)initWithDescriptor:(CGVirtualDisplayDescriptor *)descriptor;
+- (nullable instancetype)initWithDescriptor:(CGVirtualDisplayDescriptor *)descriptor;
 - (BOOL)applySettings:(CGVirtualDisplaySettings *)settings;
 @end
+
+NS_ASSUME_NONNULL_END
