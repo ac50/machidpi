@@ -180,6 +180,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     item.representedObject = DisplayRef(display: display, rung: rung)
                     menu.addItem(item)
                 }
+
+                // macOS bug (BetterDisplay #144): Spaces gestures only work
+                // on the mirror set that holds the main display.
+                let isMain = CGDisplayIsMain(session.virtualID) != 0
+                let mainItem = NSMenuItem(
+                    title: isMain ? "Main Display — Spaces swipes work here"
+                                  : "Use as Main Display (fixes Spaces swipes)",
+                    action: isMain ? nil : #selector(makeMainDisplay(_:)),
+                    keyEquivalent: ""
+                )
+                mainItem.target = self
+                mainItem.state = isMain ? .on : .off
+                mainItem.indentationLevel = 1
+                mainItem.representedObject = DisplayRef(display: display)
+                menu.addItem(mainItem)
             }
             menu.addItem(.separator())
         }
@@ -225,6 +240,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.set(prefs, for: ref.display.uuid)
         } else {
             lastErrors[ref.display.uuid] = "could not switch to \(rung.label)"
+        }
+        rebuildMenu()
+    }
+
+    /// Shift every display so the virtual lands at (0,0) — becoming the main
+    /// display — while preserving the relative arrangement. Works around the
+    /// macOS bug where Spaces gestures ignore secondary mirror sets.
+    @objc private func makeMainDisplay(_ sender: NSMenuItem) {
+        guard let ref = sender.representedObject as? DisplayRef,
+              let session = hidpi.sessions[ref.display.id] else { return }
+        let anchor = CGDisplayBounds(session.virtualID).origin
+        guard anchor.x != 0 || anchor.y != 0 else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
+            let origin = CGDisplayBounds(id).origin
+            CGConfigureDisplayOrigin(config, id,
+                                     Int32(origin.x - anchor.x), Int32(origin.y - anchor.y))
+        }
+        if CGCompleteDisplayConfiguration(config, .forSession) == .success {
+            persistOrigins()
         }
         rebuildMenu()
     }

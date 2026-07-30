@@ -78,6 +78,15 @@ Diagnostics for bug reports:
 
 ## Limitations
 
+- **Spaces swipe gestures follow a macOS bug on mirror sets**: with the
+  cursor on a *secondary* mirror set, a three-finger swipe switches the main
+  display's Space instead ([acknowledged by the BetterDisplay maintainer and
+  reported to Apple](https://github.com/waydabber/BetterDisplay/issues/144);
+  affects Sidecar/AirPlay/DisplayLink mirroring identically). Workaround
+  built in: pick **Use as Main Display (fixes Spaces swipes)** in the menu —
+  gestures then work on the HiDPI display, and plain (non-mirrored) displays
+  like the built-in one are unaffected either way. machidpi remembers the
+  arrangement.
 - Relies on the private `CGVirtualDisplay` API (stable for years — display
   vendors depend on it — but Apple could change it). Not App Store eligible.
 - While HiDPI is active the physical display is a mirror of the virtual one;
