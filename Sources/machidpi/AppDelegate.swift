@@ -206,16 +206,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 // macOS bug (BetterDisplay #144): Spaces gestures only work
-                // on the mirror set that holds the main display.
-                let isMain = CGDisplayIsMain(session.virtualID) != 0
+                // on the mirror set that holds the main display. Toggle:
+                // checked = this display is main; click again to hand main
+                // back to the built-in (or first other) display.
                 let mainItem = NSMenuItem(
-                    title: isMain ? "Main Display — Spaces swipes work here"
-                                  : "Use as Main Display (fixes Spaces swipes)",
-                    action: isMain ? nil : #selector(makeMainDisplay(_:)),
+                    title: "Use as Main Display (fixes Spaces swipes)",
+                    action: #selector(toggleMainDisplay(_:)),
                     keyEquivalent: ""
                 )
                 mainItem.target = self
-                mainItem.state = isMain ? .on : .off
+                mainItem.state = CGDisplayIsMain(session.virtualID) != 0 ? .on : .off
                 mainItem.indentationLevel = 1
                 mainItem.representedObject = DisplayRef(display: display)
                 menu.addItem(mainItem)
@@ -268,13 +268,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Shift every display so the virtual lands at (0,0) — becoming the main
-    /// display — while preserving the relative arrangement. Works around the
-    /// macOS bug where Spaces gestures ignore secondary mirror sets.
-    @objc private func makeMainDisplay(_ sender: NSMenuItem) {
+    /// Toggle which display is main, preserving the relative arrangement.
+    /// Checked → the virtual display becomes main (works around the macOS
+    /// bug where Spaces gestures ignore secondary mirror sets); unchecked →
+    /// main goes back to the built-in (or first other) display.
+    @objc private func toggleMainDisplay(_ sender: NSMenuItem) {
         guard let ref = sender.representedObject as? DisplayRef,
               let session = hidpi.sessions[ref.display.id] else { return }
-        let anchor = CGDisplayBounds(session.virtualID).origin
+
+        let target: CGDirectDisplayID
+        if CGDisplayIsMain(session.virtualID) != 0 {
+            let others = Displays.onlineIDs().filter {
+                !Displays.isMirrorSlave($0) && $0 != session.virtualID
+            }
+            guard let fallback = others.first(where: { CGDisplayIsBuiltin($0) != 0 })
+                ?? others.first
+            else { return }  // nothing to hand main back to
+            target = fallback
+        } else {
+            target = session.virtualID
+        }
+
+        let anchor = CGDisplayBounds(target).origin
         guard anchor.x != 0 || anchor.y != 0 else { return }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
