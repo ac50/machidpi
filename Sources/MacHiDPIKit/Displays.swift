@@ -15,15 +15,24 @@ public struct PhysicalDisplay {
 }
 
 public enum Displays {
-    /// Online displays that are candidates for HiDPI: not built-in and not
-    /// in `excluding` (our own virtual displays).
-    public static func external(excluding: Set<CGDirectDisplayID>) -> [PhysicalDisplay] {
+    /// All online display IDs.
+    public static func onlineIDs() -> [CGDirectDisplayID] {
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return [] }
+        return Array(ids.prefix(Int(count)))
+    }
 
-        return ids.prefix(Int(count)).compactMap { id in
+    /// Mirror slaves have no place of their own in the arrangement.
+    public static func isMirrorSlave(_ id: CGDirectDisplayID) -> Bool {
+        CGDisplayMirrorsDisplay(id) != 0
+    }
+
+    /// Online displays that are candidates for HiDPI: not built-in and not
+    /// in `excluding` (our own virtual displays).
+    public static func external(excluding: Set<CGDirectDisplayID>) -> [PhysicalDisplay] {
+        return onlineIDs().compactMap { id in
             guard CGDisplayIsBuiltin(id) == 0, !excluding.contains(id),
                   let uuid = uuidString(for: id) else { return nil }
             let panel = panelPixels(for: id)

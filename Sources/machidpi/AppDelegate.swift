@@ -57,9 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Remember where the user placed each virtual display (arrangement
-    /// changes arrive as reconfiguration events) so enable can restore it.
+    /// Remember where the user placed every display while HiDPI is active
+    /// (arrangement changes arrive as reconfiguration events). Skipped while
+    /// an enable is in flight so transient layouts are never recorded.
     private func persistOrigins() {
+        guard hidpi.pending.isEmpty, !hidpi.sessions.isEmpty else { return }
+
         for session in hidpi.sessions.values {
             let origin = CGDisplayBounds(session.virtualID).origin
             var prefs = store.prefs(for: session.physical.uuid)
@@ -70,6 +73,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 store.set(prefs, for: session.physical.uuid)
             }
         }
+
+        var map: [String: DisplayOrigin] = [:]
+        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
+            guard let uuid = Displays.uuidString(for: id) else { continue }
+            let origin = CGDisplayBounds(id).origin
+            map[uuid] = DisplayOrigin(x: Int(origin.x), y: Int(origin.y))
+        }
+        if !map.isEmpty, map != store.arrangement() {
+            store.setArrangement(map)
+        }
+    }
+
+    /// Quartz auto-repositions every display we did not explicitly place
+    /// when the mirror forms — and the virtual display's point size differs
+    /// from the physical's, so neighbours get repacked. Re-apply the whole
+    /// saved arrangement in one transaction.
+    private func restoreArrangement(_ saved: [String: DisplayOrigin]) {
+        guard !saved.isEmpty else { return }
+        var moves: [(CGDirectDisplayID, DisplayOrigin)] = []
+        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
+            guard let uuid = Displays.uuidString(for: id), let target = saved[uuid]
+            else { continue }
+            let current = CGDisplayBounds(id).origin
+            if Int(current.x) != target.x || Int(current.y) != target.y {
+                moves.append((id, target))
+            }
+        }
+        guard !moves.isEmpty else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        for (id, target) in moves {
+            CGConfigureDisplayOrigin(config, id, Int32(target.x), Int32(target.y))
+        }
+        _ = CGCompleteDisplayConfiguration(config, .forSession)
     }
 
     private func enableDisplay(_ display: PhysicalDisplay, rung: Rung?) {
@@ -80,6 +117,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 CGPoint(x: Double(x), y: Double(y))
             } }
         }
+        // Captured up front: reconciles during the enable could otherwise
+        // overwrite the snapshot before it is restored.
+        let savedArrangement = store.arrangement()
+
         hidpi.enable(display, rung: rung, origin: origin) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -89,7 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 prefs.enabled = true
                 prefs.rung = self.hidpi.sessions[display.id]?.currentRung
                 self.store.set(prefs, for: display.uuid)
-                self.persistOrigins()
+                self.restoreArrangement(savedArrangement)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.restoreArrangement(savedArrangement)
+                    self?.persistOrigins()
+                }
             case .failure(let error):
                 self.lastErrors[display.uuid] = error.localizedDescription
             }

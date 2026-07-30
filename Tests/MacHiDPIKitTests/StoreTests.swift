@@ -49,6 +49,20 @@ final class StoreTests: XCTestCase {
         XCTAssertNil(prefs?.originX)
     }
 
+    func testArrangementDefaultsToEmpty() {
+        XCTAssertTrue(store.arrangement().isEmpty)
+    }
+
+    func testArrangementRoundTrip() {
+        let map = [
+            "uuid-virtual": DisplayOrigin(x: 0, y: 0),
+            "uuid-builtin": DisplayOrigin(x: -1512, y: 480),
+        ]
+        store.setArrangement(map)
+        XCTAssertEqual(store.arrangement(), map)
+        XCTAssertEqual(Store(defaults: defaults).arrangement(), map)
+    }
+
     func testUpdateOverwritesAndKeepsOthers() {
         store.set(DisplayPrefs(enabled: true, rung: nil), for: "uuid-a")
         store.set(DisplayPrefs(enabled: false, rung: nil), for: "uuid-b")
