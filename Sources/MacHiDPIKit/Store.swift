@@ -30,26 +30,44 @@ public struct DisplayOrigin: Codable, Equatable, Sendable {
 
 public final class Store {
     private static let key = "displays"
-    private static let arrangementKey = "arrangement"
+    // v0.1.2 kept one merged "arrangement" map mixing layouts recorded with
+    // different display sets; it is deliberately ignored.
+    private static let arrangementsKey = "arrangements"
+    private static let builtinKey = "builtinLooksLike"
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    /// Snapshot of every display's origin while HiDPI was active, keyed by
-    /// display UUID (the virtual display's UUID is stable across launches
-    /// because its identity is fixed).
-    public func arrangement() -> [String: DisplayOrigin] {
-        guard let data = defaults.data(forKey: Self.arrangementKey),
-              let map = try? JSONDecoder().decode([String: DisplayOrigin].self, from: data)
-        else { return [:] }
-        return map
+    /// The layout saved for one set of arranged displays (see
+    /// `Arrangement.topologyKey`), keyed by display UUID. The virtual
+    /// display's UUID is stable across launches because its identity is fixed.
+    public func arrangement(for topology: String) -> [String: DisplayOrigin]? {
+        loadArrangements()[topology]
     }
 
-    public func setArrangement(_ map: [String: DisplayOrigin]) {
-        if let data = try? JSONEncoder().encode(map) {
-            defaults.set(data, forKey: Self.arrangementKey)
+    public func setArrangement(_ map: [String: DisplayOrigin], for topology: String) {
+        var all = loadArrangements()
+        all[topology] = map
+        if let data = try? JSONEncoder().encode(all) {
+            defaults.set(data, forKey: Self.arrangementsKey)
+        }
+    }
+
+    /// Last seen "looks like" size of the built-in display, so the matching
+    /// rung stays available while the lid is closed.
+    public var builtinLooksLike: Rung? {
+        get {
+            guard let data = defaults.data(forKey: Self.builtinKey) else { return nil }
+            return try? JSONDecoder().decode(Rung.self, from: data)
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: Self.builtinKey)
+            } else {
+                defaults.removeObject(forKey: Self.builtinKey)
+            }
         }
     }
 
@@ -63,6 +81,13 @@ public final class Store {
         if let data = try? JSONEncoder().encode(all) {
             defaults.set(data, forKey: Self.key)
         }
+    }
+
+    private func loadArrangements() -> [String: [String: DisplayOrigin]] {
+        guard let data = defaults.data(forKey: Self.arrangementsKey),
+              let all = try? JSONDecoder().decode([String: [String: DisplayOrigin]].self, from: data)
+        else { return [:] }
+        return all
     }
 
     private func loadAll() -> [String: DisplayPrefs] {

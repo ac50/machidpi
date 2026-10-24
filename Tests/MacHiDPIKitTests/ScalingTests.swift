@@ -64,4 +64,49 @@ final class ScalingTests: XCTestCase {
                        Rung(width: 2560, height: 1440))
         XCTAssertNil(Scaling.defaultRung(for: [], panelWidth: 2560))
     }
+
+    func testLadderAddingBuiltinRungInsertsByWidth() {
+        let builtin = Rung(width: 1470, height: 956)  // 13.6" MacBook Air default
+        XCTAssertEqual(Scaling.ladder(panelWidth: 2560, panelHeight: 1440, adding: builtin), [
+            Rung(width: 2560, height: 1440),
+            Rung(width: 2048, height: 1152),
+            Rung(width: 1920, height: 1080),
+            Rung(width: 1706, height: 960),
+            Rung(width: 1600, height: 900),
+            builtin,
+            Rung(width: 1280, height: 720),
+        ])
+    }
+
+    func testLadderAddingKnownOrMissingRungIsUnchanged() {
+        let base = Scaling.ladder(panelWidth: 2560, panelHeight: 1440)
+        XCTAssertEqual(Scaling.ladder(panelWidth: 2560, panelHeight: 1440,
+                                      adding: Rung(width: 1920, height: 1080)), base)
+        XCTAssertEqual(Scaling.ladder(panelWidth: 2560, panelHeight: 1440, adding: nil), base)
+        XCTAssertTrue(Scaling.ladder(panelWidth: 0, panelHeight: 0,
+                                     adding: Rung(width: 1470, height: 956)).isEmpty)
+    }
+
+    func testLadderAddingRungOnlyWhenItFitsThePanel() {
+        let builtin = Rung(width: 1470, height: 956)
+        // Too tall for 1600×900 and too large for 1366×768: not offered, so
+        // the virtual display keeps exactly the panel-derived size limits.
+        XCTAssertEqual(Scaling.ladder(panelWidth: 1600, panelHeight: 900, adding: builtin),
+                       Scaling.ladder(panelWidth: 1600, panelHeight: 900))
+        XCTAssertEqual(Scaling.ladder(panelWidth: 1366, panelHeight: 768, adding: builtin),
+                       [Rung(width: 1366, height: 768)])
+        // Fits a 1080p panel.
+        XCTAssertEqual(Scaling.ladder(panelWidth: 1920, panelHeight: 1080, adding: builtin), [
+            Rung(width: 1920, height: 1080),
+            Rung(width: 1536, height: 864),
+            builtin,
+            Rung(width: 1440, height: 810),
+            Rung(width: 1280, height: 720),
+        ])
+    }
+
+    func testBuiltinRungIsNotPixelExactOn2K() {
+        XCTAssertFalse(Scaling.isPixelExact(Rung(width: 1470, height: 956),
+                                            panelWidth: 2560, panelHeight: 1440))
+    }
 }

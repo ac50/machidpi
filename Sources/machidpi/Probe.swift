@@ -21,7 +21,8 @@ func runProbe() -> Int32 {
             + "vendor=0x\(String(display.vendorID, radix: 16)) "
             + "product=0x\(String(display.productID, radix: 16))")
         let ladder = Scaling.ladder(panelWidth: display.pixelWidth,
-                                    panelHeight: display.pixelHeight)
+                                    panelHeight: display.pixelHeight,
+                                    adding: Displays.builtinLooksLike())
         print("probe:   ladder: \(ladder.map(\.label).joined(separator: ", "))")
     }
 

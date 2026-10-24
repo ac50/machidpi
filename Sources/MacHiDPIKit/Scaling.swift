@@ -33,6 +33,22 @@ public enum Scaling {
         return rungs
     }
 
+    /// The panel ladder plus one extra rung — the built-in display's current
+    /// "looks like" size, so the external can match the MacBook exactly. The
+    /// extra rung keeps its own aspect ratio (macOS letterboxes it on the
+    /// panel). It is only offered when it fits inside the first, panel-sized
+    /// rung, so the virtual display's size limits stay exactly as without it.
+    public static func ladder(panelWidth: Int, panelHeight: Int, adding extra: Rung?) -> [Rung] {
+        var rungs = ladder(panelWidth: panelWidth, panelHeight: panelHeight)
+        guard let extra, let first = rungs.first, !rungs.contains(extra),
+              extra.width > 0, extra.height > 0,
+              extra.width <= first.width, extra.height <= first.height
+        else { return rungs }
+        let index = rungs.firstIndex { $0.width < extra.width } ?? rungs.count
+        rungs.insert(extra, at: index)
+        return rungs
+    }
+
     /// Default selection: the rung closest to 2/3 of the panel width —
     /// matches macOS's own default ("looks like 2560×1440" on a 27" 4K).
     public static func defaultRung(for ladder: [Rung], panelWidth: Int) -> Rung? {

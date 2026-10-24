@@ -52,6 +52,18 @@ public enum Displays {
         }
     }
 
+    /// The built-in panel's current "looks like" size (e.g. 1470×956 on a
+    /// 13.6" MacBook Air), or nil when it is offline or not running HiDPI.
+    public static func builtinLooksLike() -> Rung? {
+        for id in onlineIDs() where CGDisplayIsBuiltin(id) != 0 {
+            guard let mode = CGDisplayCopyDisplayMode(id),
+                  mode.width > 0, mode.height > 0, mode.pixelWidth > mode.width
+            else { continue }
+            return Rung(width: mode.width, height: mode.height)
+        }
+        return nil
+    }
+
     /// Stable identity that survives replugging (CGDirectDisplayID does not).
     public static func uuidString(for id: CGDirectDisplayID) -> String? {
         guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue()

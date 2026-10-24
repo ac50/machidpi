@@ -1,6 +1,9 @@
 import CGVirtualDisplayShim
 import CoreGraphics
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "io.github.ac50.machidpi", category: "virtual")
 
 /// Creates a HiDPI-capable virtual display per physical display and hardware-
 /// mirrors the physical panel onto it. Main-thread only.
@@ -25,6 +28,8 @@ public final class VirtualHiDPI {
         public let physical: PhysicalDisplay
         public let virtualID: CGDirectDisplayID
         public let ladder: [Rung]
+        /// The extra rung matching the built-in display, if one was offered.
+        public let builtinRung: Rung?
         public var currentRung: Rung
         let display: CGVirtualDisplay  // strong ref keeps the display alive
     }
@@ -47,16 +52,22 @@ public final class VirtualHiDPI {
     /// mirror the physical display onto it, then select the wanted rung.
     /// `origin` restores the user's saved arrangement position; when nil the
     /// virtual display takes the physical display's current place.
+    /// `builtinRung` (the built-in display's "looks like" size) is offered as
+    /// an extra rung so the external can match the MacBook exactly.
     /// No-op while a session exists or an enable is already in flight.
     public func enable(_ physical: PhysicalDisplay, rung: Rung?, origin: CGPoint? = nil,
+                       builtinRung: Rung? = nil,
                        completion: @escaping (Result<Void, Error>) -> Void)
     {
         guard sessions[physical.id] == nil, !pending.contains(physical.id) else { return }
 
+        let panelLadder = Scaling.ladder(panelWidth: physical.pixelWidth,
+                                         panelHeight: physical.pixelHeight)
         let ladder = Scaling.ladder(panelWidth: physical.pixelWidth,
-                                    panelHeight: physical.pixelHeight)
+                                    panelHeight: physical.pixelHeight, adding: builtinRung)
+        // The default stays panel-shaped; the extra rung is opt-in.
         guard let target = rung.flatMap({ ladder.contains($0) ? $0 : nil })
-            ?? Scaling.defaultRung(for: ladder, panelWidth: physical.pixelWidth),
+            ?? Scaling.defaultRung(for: panelLadder, panelWidth: physical.pixelWidth),
             let maxRung = ladder.first
         else {
             completion(.failure(.modeNotFound))
@@ -136,8 +147,8 @@ public final class VirtualHiDPI {
                 {
                 case .success:
                     sessions[physical.id] = Session(physical: physical, virtualID: virtualID,
-                                                    ladder: ladder, currentRung: target,
-                                                    display: display)
+                                                    ladder: ladder, builtinRung: builtinRung,
+                                                    currentRung: target, display: display)
                     // A freshly created virtual display may briefly report an
                     // empty mode list; retry once after it settles.
                     if !setRung(target, physicalID: physical.id) {
@@ -147,6 +158,7 @@ public final class VirtualHiDPI {
                     }
                     finish(.success(()))
                 case .failure(let error):
+                    logger.error("mirror onto \(virtualID, privacy: .public) failed: \(error.localizedDescription, privacy: .public); \(attemptsLeft, privacy: .public) retries left")
                     guard attemptsLeft > 0 else {
                         finish(.failure(error))  // `display` released → removed
                         return
@@ -185,7 +197,8 @@ public final class VirtualHiDPI {
         var config: CGDisplayConfigRef?
         if CGBeginDisplayConfiguration(&config) == .success {
             CGConfigureDisplayMirrorOfDisplay(config, physicalID, kCGNullDirectDisplay)
-            CGCompleteDisplayConfiguration(config, .forSession)
+            let result = CGCompleteDisplayConfiguration(config, .forSession)
+            logger.info("unmirrored panel \(physicalID, privacy: .public): CGError \(result.rawValue, privacy: .public)")
         }
         sessions[physicalID] = nil
     }
@@ -195,13 +208,25 @@ public final class VirtualHiDPI {
     public func setRung(_ rung: Rung, physicalID: CGDirectDisplayID) -> Bool {
         guard var session = sessions[physicalID] else { return false }
         let (infos, refs) = Displays.modeInfosWithRefs(for: session.virtualID)
-        guard let match = ModeSelection.hiDPIMode(matching: rung, in: infos) else { return false }
+        guard let match = ModeSelection.hiDPIMode(matching: rung, in: infos) else {
+            logger.error("no HiDPI mode \(rung.label, privacy: .public) among \(infos.count, privacy: .public) modes")
+            return false
+        }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return false }
         CGConfigureDisplayWithDisplayMode(config, session.virtualID, refs[match.index], nil)
-        guard CGCompleteDisplayConfiguration(config, .forSession) == .success else { return false }
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        guard result == .success else {
+            logger.error("switch to \(rung.label, privacy: .public) failed: CGError \(result.rawValue, privacy: .public)")
+            return false
+        }
         session.currentRung = rung
         sessions[physicalID] = session
+        // Quartz may re-mode the other members of a mirror set when the
+        // master's mode changes; record what the panel scans out now.
+        if let panel = CGDisplayCopyDisplayMode(physicalID) {
+            logger.info("rung \(rung.label, privacy: .public) set; panel at \(panel.pixelWidth, privacy: .public)x\(panel.pixelHeight, privacy: .public) @\(panel.refreshRate, privacy: .public)Hz")
+        }
         return true
     }
 

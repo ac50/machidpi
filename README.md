@@ -70,10 +70,20 @@ every tool of this kind, not something machidpi can remove. Windows stays
 sharper at "1080p-sized UI on 2K" because it scales vector UI at native
 resolution instead of downsampling a rendered bitmap.
 
+### Same as MacBook
+
+The rung marked **(same as MacBook)** uses the built-in display's current
+"looks like" size (e.g. 1470×956 on a 13.6" MacBook Air), so the external
+shows exactly what a mirrored MacBook would — but as its own extended
+desktop. It keeps the MacBook's aspect ratio, so a 16:9 panel shows black
+bars at the sides, just as in mirror mode.
+
 Diagnostics for bug reports:
 
 ```sh
 /Applications/machidpi.app/Contents/MacOS/machidpi probe
+# live log of every enable, mirror, rung switch and layout restore:
+log stream --predicate 'subsystem == "io.github.ac50.machidpi"' --info
 ```
 
 ## Limitations

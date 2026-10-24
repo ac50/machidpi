@@ -49,18 +49,23 @@ final class StoreTests: XCTestCase {
         XCTAssertNil(prefs?.originX)
     }
 
-    func testArrangementDefaultsToEmpty() {
-        XCTAssertTrue(store.arrangement().isEmpty)
+    func testArrangementDefaultsToNil() {
+        XCTAssertNil(store.arrangement(for: "uuid-builtin,uuid-virtual"))
     }
 
-    func testArrangementRoundTrip() {
-        let map = [
+    func testArrangementRoundTripPerTopology() {
+        let home = [
             "uuid-virtual": DisplayOrigin(x: 0, y: 0),
             "uuid-builtin": DisplayOrigin(x: -1512, y: 480),
         ]
-        store.setArrangement(map)
-        XCTAssertEqual(store.arrangement(), map)
-        XCTAssertEqual(Store(defaults: defaults).arrangement(), map)
+        let office = [
+            "uuid-other": DisplayOrigin(x: 0, y: 0),
+            "uuid-builtin": DisplayOrigin(x: 1920, y: 0),
+        ]
+        store.setArrangement(home, for: "home")
+        store.setArrangement(office, for: "office")
+        XCTAssertEqual(store.arrangement(for: "home"), home)
+        XCTAssertEqual(Store(defaults: defaults).arrangement(for: "office"), office)
     }
 
     func testUpdateOverwritesAndKeepsOthers() {
@@ -70,5 +75,13 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(store.prefs(for: "uuid-a"),
                        DisplayPrefs(enabled: true, rung: Rung(width: 2560, height: 1440)))
         XCTAssertEqual(store.prefs(for: "uuid-b"), DisplayPrefs(enabled: false, rung: nil))
+    }
+
+    func testBuiltinLooksLikeRoundTrip() {
+        XCTAssertNil(store.builtinLooksLike)
+        store.builtinLooksLike = Rung(width: 1470, height: 956)
+        XCTAssertEqual(Store(defaults: defaults).builtinLooksLike, Rung(width: 1470, height: 956))
+        store.builtinLooksLike = nil
+        XCTAssertNil(store.builtinLooksLike)
     }
 }

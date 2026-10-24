@@ -1,6 +1,10 @@
 import AppKit
 import MacHiDPIKit
+import os
 import ServiceManagement
+
+/// `log stream --predicate 'subsystem == "io.github.ac50.machidpi"'`
+private let logger = Logger(subsystem: "io.github.ac50.machidpi", category: "display")
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -40,21 +44,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// UUIDs of displays that currently occupy a place in the arrangement.
     private var lastArrangedSet: Set<String> = []
 
+    /// Automatic re-enables left per display; manual toggles and replugs
+    /// reset it.
+    private var enableRetries = RetryBudget(limit: 3)
+
     /// Make reality match preferences: tear down sessions whose physical
     /// display vanished; enable remembered displays that (re)appeared.
     private func reconcile() {
         let externals = Displays.external(excluding: hidpi.virtualIDs)
         let presentIDs = Set(externals.map(\.id))
+        enableRetries.keep(only: Set(externals.map(\.uuid)))
 
         for physicalID in hidpi.sessions.keys where !presentIDs.contains(physicalID) {
+            logger.info("panel \(physicalID, privacy: .public) gone, tearing down")
             hidpi.disable(physicalID: physicalID)
         }
         for display in externals
         where hidpi.sessions[display.id] == nil
             && !hidpi.pending.contains(display.id)
             && store.prefs(for: display.uuid)?.enabled == true
+            && enableRetries.allows(display.uuid)
         {
             enableDisplay(display, rung: store.prefs(for: display.uuid)?.rung)
+        }
+
+        // Wake, lid and standby transitions take several reconfigurations to
+        // finish; touching the layout before every mirror is back fights
+        // WindowServer. A later event re-runs this once things settle.
+        guard layoutSettled() else {
+            logger.info("layout not settled (enable in flight or mirror missing), waiting")
+            // Whatever happened meanwhile counts as a topology change: the
+            // next settled pass restores instead of recording a re-tile.
+            lastArrangedSet = []
+            rebuildMenu()
+            return
         }
 
         // Topology change (lid open/close, plug/unplug): macOS repositions
@@ -66,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if arrangedSet != lastArrangedSet {
             lastArrangedSet = arrangedSet
             if !hidpi.sessions.isEmpty {
-                restoreArrangement(store.arrangement())
+                restoreArrangement()
             }
         } else {
             persistOrigins()
@@ -74,16 +97,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    /// No enable in flight and every session's panel still mirrors its
+    /// virtual display.
+    private func layoutSettled() -> Bool {
+        hidpi.pending.isEmpty && hidpi.sessions.values.allSatisfy {
+            CGDisplayMirrorsDisplay($0.physical.id) == $0.virtualID
+        }
+    }
+
+    /// Origins of the displays that occupy a place in the arrangement (mirror
+    /// slaves follow their master), keyed by UUID.
+    private func arrangedOrigins() -> (origins: [String: DisplayOrigin],
+                                       ids: [String: CGDirectDisplayID])
+    {
+        var origins: [String: DisplayOrigin] = [:]
+        var ids: [String: CGDirectDisplayID] = [:]
+        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
+            guard let uuid = Displays.uuidString(for: id) else { continue }
+            let origin = CGDisplayBounds(id).origin
+            origins[uuid] = DisplayOrigin(x: Int(origin.x), y: Int(origin.y))
+            ids[uuid] = id
+        }
+        return (origins, ids)
+    }
+
     /// Remember where the user placed every display while HiDPI is active
-    /// (arrangement changes arrive as reconfiguration events). Skipped while
-    /// an enable is in flight so transient layouts are never recorded.
+    /// (arrangement changes arrive as reconfiguration events). Skipped until
+    /// the layout has settled so transient layouts are never recorded.
     private func persistOrigins() {
-        guard hidpi.pending.isEmpty, !hidpi.sessions.isEmpty else { return }
-        let arranged = Displays.onlineIDs().filter { !Displays.isMirrorSlave($0) }
+        guard layoutSettled(), !hidpi.sessions.isEmpty else { return }
+        let panels = Set(hidpi.sessions.values.map(\.physical.uuid))
         // A lone display always sits at (0,0); recording that transient
         // state (clamshell) would corrupt the remembered multi-display
         // layout, so only snapshot real arrangements.
-        guard arranged.count >= 2 else { return }
+        guard let snapshot = Arrangement.snapshot(of: arrangedOrigins().origins,
+                                                  excluding: panels)
+        else { return }
 
         for session in hidpi.sessions.values {
             let origin = CGDisplayBounds(session.virtualID).origin
@@ -96,33 +145,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Merge so displays that are temporarily offline keep their entries.
-        let existing = store.arrangement()
-        var map = existing
-        for id in arranged {
-            guard let uuid = Displays.uuidString(for: id) else { continue }
-            let origin = CGDisplayBounds(id).origin
-            map[uuid] = DisplayOrigin(x: Int(origin.x), y: Int(origin.y))
-        }
-        if map != existing {
-            store.setArrangement(map)
+        let topology = Arrangement.topologyKey(Set(snapshot.keys))
+        if store.arrangement(for: topology) != snapshot {
+            store.setArrangement(snapshot, for: topology)
         }
     }
 
     /// Quartz auto-repositions every display we did not explicitly place
     /// when the mirror forms — and the virtual display's point size differs
-    /// from the physical's, so neighbours get repacked. Re-apply the whole
-    /// saved arrangement in one transaction.
-    private func restoreArrangement(_ saved: [String: DisplayOrigin]) {
-        guard !saved.isEmpty else { return }
+    /// from the physical's, so neighbours get repacked. Re-apply the layout
+    /// saved for exactly this set of displays, in one transaction.
+    private func restoreArrangement() {
+        guard layoutSettled() else { return }
+        let (current, ids) = arrangedOrigins()
+        let topology = Arrangement.topologyKey(Set(current.keys))
+        guard let saved = store.arrangement(for: topology) else { return }
         var moves: [(CGDirectDisplayID, DisplayOrigin)] = []
-        for id in Displays.onlineIDs() where !Displays.isMirrorSlave(id) {
-            guard let uuid = Displays.uuidString(for: id), let target = saved[uuid]
-            else { continue }
-            let current = CGDisplayBounds(id).origin
-            if Int(current.x) != target.x || Int(current.y) != target.y {
-                moves.append((id, target))
-            }
+        for (uuid, target) in Arrangement.restoreMoves(current: current, saved: saved) {
+            guard let id = ids[uuid] else { continue }
+            moves.append((id, target))
         }
         guard !moves.isEmpty else { return }
         var config: CGDisplayConfigRef?
@@ -130,36 +171,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (id, target) in moves {
             CGConfigureDisplayOrigin(config, id, Int32(target.x), Int32(target.y))
         }
-        _ = CGCompleteDisplayConfiguration(config, .forSession)
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        logger.info("restored \(moves.count, privacy: .public) origin(s): CGError \(result.rawValue, privacy: .public)")
+    }
+
+    /// The built-in display's current "looks like" size, remembered so the
+    /// matching rung stays available in clamshell mode.
+    private func builtinRung() -> Rung? {
+        if let live = Displays.builtinLooksLike() {
+            if store.builtinLooksLike != live { store.builtinLooksLike = live }
+            return live
+        }
+        return store.builtinLooksLike
     }
 
     private func enableDisplay(_ display: PhysicalDisplay, rung: Rung?) {
         lastErrors[display.uuid] = nil
         let saved = store.prefs(for: display.uuid)
-        let origin = saved.flatMap { prefs in
+        // Alone (lid closed) the virtual display lands at (0,0) anyway;
+        // requesting a saved side-by-side origin only forces a re-tile.
+        let alone = !Displays.onlineIDs().contains {
+            $0 != display.id && !Displays.isMirrorSlave($0)
+        }
+        let origin = alone ? nil : saved.flatMap { prefs in
             prefs.originX.flatMap { x in prefs.originY.map { y in
                 CGPoint(x: Double(x), y: Double(y))
             } }
         }
-        // Captured up front: reconciles during the enable could otherwise
-        // overwrite the snapshot before it is restored.
-        let savedArrangement = store.arrangement()
-
-        hidpi.enable(display, rung: rung, origin: origin) { [weak self] result in
+        hidpi.enable(display, rung: rung, origin: origin,
+                     builtinRung: builtinRung()) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success:
+                logger.info("enabled HiDPI on \(display.name, privacy: .public)")
+                self.enableRetries.reset(display.uuid)
                 var prefs = self.store.prefs(for: display.uuid)
                     ?? DisplayPrefs(enabled: true, rung: nil)
                 prefs.enabled = true
                 prefs.rung = self.hidpi.sessions[display.id]?.currentRung
                 self.store.set(prefs, for: display.uuid)
-                self.restoreArrangement(savedArrangement)
+                // Nothing can overwrite the saved layout meanwhile: recording
+                // waits for the layout to settle and is kept per display set.
+                self.restoreArrangement()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                    self?.restoreArrangement(savedArrangement)
+                    self?.restoreArrangement()
                     self?.persistOrigins()
                 }
             case .failure(let error):
+                logger.error("enable failed on \(display.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                self.enableRetries.recordFailure(display.uuid)
                 self.lastErrors[display.uuid] = error.localizedDescription
             }
             self.rebuildMenu()
@@ -183,12 +243,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let toggle = NSMenuItem(title: "Enable HiDPI",
                                     action: #selector(toggleDisplay(_:)), keyEquivalent: "")
             toggle.target = self
-            toggle.state = session != nil ? .on : .off
+            // Mixed: wanted on, but enabling keeps failing — a click stops it.
+            let wanted = store.prefs(for: display.uuid)?.enabled == true
+            toggle.state = session != nil ? .on
+                : (wanted && lastErrors[display.uuid] != nil ? .mixed : .off)
             toggle.representedObject = DisplayRef(display: display)
             menu.addItem(toggle)
 
             if let error = lastErrors[display.uuid] {
                 menu.addItem(disabledItem("⚠︎ \(error)"))
+            }
+            if let session, hidpi.pending.isEmpty,
+               CGDisplayMirrorsDisplay(display.id) != session.virtualID
+            {
+                menu.addItem(disabledItem("⚠︎ mirror lost — turn Enable HiDPI off and on"))
             }
 
             if let session {
@@ -196,7 +264,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let exact = Scaling.isPixelExact(rung,
                                                      panelWidth: display.pixelWidth,
                                                      panelHeight: display.pixelHeight)
-                    let item = NSMenuItem(title: exact ? "\(rung.label)  ✦" : rung.label,
+                    var title = rung.label
+                    if rung == session.builtinRung { title += "  (same as MacBook)" }
+                    if exact { title += "  ✦" }
+                    let item = NSMenuItem(title: title,
                                           action: #selector(selectRung(_:)), keyEquivalent: "")
                     item.target = self
                     item.state = rung == session.currentRung ? .on : .off
@@ -250,7 +321,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             prefs.enabled = false
             store.set(prefs, for: ref.display.uuid)
             rebuildMenu()
+        } else if lastErrors[ref.display.uuid] != nil,
+                  var prefs = store.prefs(for: ref.display.uuid), prefs.enabled
+        {
+            // Failing display: switch it off for good (no retries, not even at
+            // next login); the next click is an explicit retry.
+            prefs.enabled = false
+            store.set(prefs, for: ref.display.uuid)
+            lastErrors[ref.display.uuid] = nil
+            rebuildMenu()
         } else {
+            enableRetries.reset(ref.display.uuid)  // an explicit retry always runs
             enableDisplay(ref.display, rung: store.prefs(for: ref.display.uuid)?.rung)
         }
     }
